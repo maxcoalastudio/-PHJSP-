@@ -1,173 +1,1898 @@
-
 <?php
-class JS {
-    private $codigo = '';
-    private $blocosAbertos = 0;
-    private $vars = array();
-    private $blocos = array(
-        'if' => true,
-        'else' => true,
-        'for' => true,
-        'while' => true,
-        'function' => true,
-        'switch' => true,
-        'try' => true,
-        'catch' => true,
-    );
+declare(strict_types=1);
 
-    public function __call($nomeFuncao, $args) {
-        $funcoesJS = array(
-            'alert' => 'alert(%s);',
-            'consoleLog' => 'console.log(%s);',
-            'documentWrite' => 'document.write(%s);',
-            'if' => 'if (%s) {',
-            'else' => '} else {',
-            'for' => 'for (%s) {',
-            'while' => 'while (%s) {',
-            'function' => 'function %s(%s) {',
-            'return' => 'return %s;',
-            'switch' => 'switch (%s) {',
-            'case' => 'case %s:',
-            'break' => 'break;',
-            'default' => 'default:',
-            'try' => 'try {',
-            'catch' => '} catch (%s) {',
-            'throw' => 'throw %s;',
-            'new' => 'new %s(%s);',
-            'instanceof' => '%s instanceof %s',
-            'typeof' => 'typeof %s',
-            'delete' => 'delete %s;',
-            'void' => 'void %s;',
-        );
+class JsBuilder
+{
+    private array $lines = [];
+    private int $indent = 0;
+    private const INDENT_STR = '    ';
+    
+    // Controle de blocos abertos para fechamento automático
+    private array $blockStack = [];
 
-        if (!isset($funcoesJS[$nomeFuncao])) {
-            throw new Exception("Função JavaScript (não encontrada: $nomeFuncao)");
+    public function __construct()
+    {
+        // nenhum requisito adicional
+    }
+
+    // indentação atual
+    private function indentation(): string
+    {
+        return str_repeat(self::INDENT_STR, $this->indent);
+    }
+
+    // Converte valores PHP para literais JS (strings com aspas, números, booleanos, null, arrays/objetos)
+    private function toJsLiteral(mixed $value): string
+    {
+        if ($value === null) {
+            return 'null';
         }
-
-        if (isset($this->blocos[$nomeFuncao])) {
-            $this->blocosAbertos++;
+        
+        if (is_bool($value)) {
+            return $value ? 'true' : 'false';
         }
-
-        if ($nomeFuncao == 'function') {
-            $nome = $args[0];
-            $parametros = implode(', ', $args[1]);
-            $scr = sprintf($funcoesJS[$nomeFuncao], $nome, $parametros);
-        } else {
-            $argsStr = '';
-            foreach ($args as $arg) {
-                if (is_array($arg)) {
-                    $argsStr .= implode(', ', $arg) . ', ';
-                } elseif (is_string($arg) && !isset($this->vars[$arg])) {
-                    $argsStr .= $this->parseExpression($arg) . ', ';
-                } else {
-                    $argsStr .= $arg . ', ';
+        
+        if (is_numeric($value)) {
+            return (string)$value;
+        }
+        
+        if (is_string($value)) {
+            // Verificar se é uma expressão JS que NÃO deve ser escapada
+            if ($this->isJsExpression($value)) {
+                return $value; // Retorna como está (variável, chamada de função, etc)
+            }
+            
+            // Se começar e terminar com aspas simples ou duplas, manter como está
+            if (preg_match('/^(["\']).*\1$/', $value)) {
+                return $value;
+            }
+            
+            // Se for template string (com crases), manter como está
+            if (preg_match('/^`.*`$/', $value)) {
+                return $value;
+            }
+            
+            // Caso contrário, escapar e colocar entre aspas duplas
+            return json_encode($value, JSON_UNESCAPED_UNICODE);
+        }
+        
+        if (is_array($value)) {
+            // Verificar se é array associativo (objeto) ou indexado (array)
+            if (array_keys($value) !== range(0, count($value) - 1)) {
+                // É um objeto associativo
+                $parts = [];
+                foreach ($value as $k => $v) {
+                    $parts[] = json_encode((string)$k) . ': ' . $this->toJsLiteral($v);
                 }
-            }
-            $argsStr = rtrim($argsStr, ', ');
-            $scr = sprintf($funcoesJS[$nomeFuncao], $argsStr);
-        }
-
-        $this->codigo .= $scr;
-    }
-
-    private function parseExpression($expr) {
-        $expr = trim($expr);
-        if (preg_match('/^([a-zA-Z0-9_]+)\s*\+\s*([a-zA-Z0-9_]+)$/', $expr, $match)) {
-            return '(' . $match[1] . ' + ' . $match[2] . ')';
-        }
-        if (preg_match('/^([a-zA-Z0-9_]+)\s*-\s*([a-zA-Z0-9_]+)$/', $expr, $match)) {
-            return '(' . $match[1] . ' - ' . $match[2] . ')';
-        }
-        if (preg_match('/^([a-zA-Z0-9_]+)\s*(==|!=|>|<|>=|<=)\s*([a-zA-Z0-9_]+)$/', $expr, $match)) {
-            return '(' . $match[1] . ' ' . $match[2] . ' ' . $match[3] . ')';
-        }
-        return $expr;
-    }
-
-    public function for_($init, $cond, $incr) {
-        $this->codigo .= 'for (' . $init . '; ' . $cond . '; ' . $incr . ') {';
-        $this->blocosAbertos++;
-    }
-    public function for($args) {
-    $expr = '';
-    foreach ($args as $arg) {
-        if (is_array($arg)) {
-            $expr .= implode(' ', $arg) . '; ';
-        } else {
-            $expr .= $arg . '; ';
-        }
-    }
-    $expr = rtrim($expr, '; ');
-    $this->codigo .= 'for (' . $expr . ') {';
-}
-
-    public function __destruct() {
-        while ($this->blocosAbertos > 0) {
-            $this->codigo .= "}";
-            $this->blocosAbertos--;
-        }
-    }
-
-    public function var($nome, $valor) {
-        if (is_numeric($valor)) {
-            $valor = (int)$valor;
-        } elseif (is_bool($valor)) {
-            $valor = $valor ? 'true' : 'false';
-        } elseif (is_string($valor)) {
-            $valor = "'" . $valor . "'";
-        } elseif (is_null($valor)) {
-            $valor = 'null';
-        }
-        $this->vars[$nome] = $valor;
-        $this->codigo .= "var $nome = $valor;";
-    }
-
-    public function objeto($nome, $propriedades) {
-        $this->codigo .= "var $nome = {";
-        foreach ($propriedades as $prop => $valor) {
-            $this->codigo .= "$prop: '$valor', ";
-        }
-        $this->codigo = rtrim($this->codigo, ', ') ;
-    }
-    public function new($classe, ...$args) {
-        $argsStr = '';
-        foreach ($args as $arg) {
-            if (is_array($arg)) {
-                $argsStr .= implode(', ', $arg) . ', ';
-            } elseif (is_string($arg) && !isset($this->vars[$arg])) {
-                $argsStr .= $this->parseExpression($arg) . ', ';
+                return '{' . implode(', ', $parts) . '}';
             } else {
-                $argsStr .= $arg . ', ';
+                // É um array indexado
+                $parts = array_map([$this, 'toJsLiteral'], $value);
+                return '[' . implode(', ', $parts) . ']';
             }
         }
-        $argsStr = rtrim($argsStr, ', ');
-        $this->codigo .= 'new ' . $classe . '(' . $argsStr . ')';
-    }
-    public function array($nome, $elementos) {
-        $this->codigo .= "var $nome = [";
-        foreach ($elementos as $elemento) {
-            $this->codigo .= "'$elemento', ";
+        
+        if (is_object($value)) {
+            // Se for um objeto, converter para array e depois para objeto JS
+            return $this->toJsLiteral((array)$value);
         }
-        $this->codigo = rtrim($this->codigo, ', ') . "];";
+        
+        // Fallback para json_encode
+        return json_encode($value, JSON_UNESCAPED_UNICODE);
+    }
+    
+    
+    // Verifica se uma string é uma expressão JS (não deve ser colocada entre aspas)
+    private function isJsExpression(string $value): bool
+    {
+        // Se for um número (com ou sem decimal)
+        if (is_numeric($value)) {
+            return true;
+        }
+        
+        // Palavras reservadas e literais
+        $reserved = ['true', 'false', 'null', 'undefined', 'this', 'NaN', 'Infinity'];
+        if (in_array(strtolower($value), $reserved)) {
+            return true;
+        }
+        
+        // Nomes de variáveis válidos (começa com letra, $ ou _, seguido de letras, números, $ ou _)
+        if (preg_match('/^[a-zA-Z_$][a-zA-Z0-9_$]*$/', $value)) {
+            return true; // É uma variável
+        }
+        
+        // Acesso a propriedades (ex: pessoa.nome, carro.modelo)
+        if (preg_match('/^[a-zA-Z_$][a-zA-Z0-9_$]*(\.[a-zA-Z_$][a-zA-Z0-9_$]*)+$/', $value)) {
+            return true;
+        }
+        
+        // Chamadas de função (ex: minhaFuncao(), objeto.metodo())
+        if (preg_match('/^[a-zA-Z_$][a-zA-Z0-9_$]*\s*\(.*\)$/', $value)) {
+            return true;
+        }
+        
+        // Expressões com operadores (+, -, *, /, etc)
+        if (preg_match('/[+\-*\/%&|\^<>!=]=?/', $value) && !preg_match('/^["\'].*["\']$/', $value)) {
+            return true;
+        }
+        
+        // Acesso a array (ex: frutas[0], pessoas[i].nome)
+        if (preg_match('/[a-zA-Z_$][a-zA-Z0-9_$]*\[.*\]/', $value)) {
+            return true;
+        }
+        
+        // Objetos literais
+        if (preg_match('/^\{.*\}$/', $value)) {
+            return true;
+        }
+        
+        // Arrays literais
+        if (preg_match('/^\[.*\]$/', $value)) {
+            return true;
+        }
+        
+        // Template strings (ex: `Olá ${nome}`)
+        if (preg_match('/^`.*`$/', $value)) {
+            return true;
+        }
+        
+        // Operadores new, typeof, instanceof, delete, void
+        if (preg_match('/^(new|typeof|instanceof|delete|void)\s+/', $value)) {
+            return true;
+        }
+        
+        return false;
     }
 
-    public function function($nome, $parametros, $corpo) {
-        $parametrosStr = implode(', ', $parametros);
-        $this->codigo .= 'function ' . $nome . '(' . $parametrosStr . ') {' . $corpo . '}';
+    // Emite uma linha com a indentação atual
+    private function emit(string $line): void
+    {
+        $this->lines[] = $this->indentation() . $line;
     }
 
-    private function gerarCodigo() {
-        $blocos = array('if', 'else', 'for', 'while', 'function', 'switch', 'try', 'catch');
-        $ultimoBloco = substr($this->codigo, -10);
-        if (in_array(explode(' ', $ultimoBloco)[0], $blocos)) {
-            return $this->codigo . "}";
+    // Gera o código de classe
+    public function klass(string $nome, string $corpo): void
+    {
+        $this->emit("class $nome {");
+        $this->indent++;
+        foreach (explode("\n", $corpo) as $linha) {
+            $linha = rtrim($linha);
+            if ($linha === '') continue;
+            $this->emit($linha);
+        }
+        $this->indent--;
+        $this->emit("}");
+    }
+
+    // Instanciação de objeto
+    public function instanciar(string $variavel, string $classe, array $args): void
+    {
+        $argsStr = implode(', ', array_map([$this, 'toJsLiteral'], $args));
+        $this->emit("var $variavel = new $classe($argsStr);");
+    }
+    
+    // Operador new (sem atribuição)
+    public function new(string $classe, ...$args): string
+    {
+        $argsStr = implode(', ', array_map([$this, 'toJsLiteral'], $args));
+        return "new $classe($argsStr)";
+    }
+
+    // Cria um objeto literal com chaves não obrigatórias entre aspas
+    public function objeto(string $nome, array $propriedades): void
+    {
+        $this->emit("var $nome = {");
+        $this->indent++;
+
+        // Corrige trailing comma: último item não leva vírgula
+        $keys = array_keys($propriedades);
+        $lastKey = end($keys);
+
+        foreach ($propriedades as $prop => $valor) {
+            $isLast = ($prop === $lastKey);
+            $comma = $isLast ? '' : ',';
+            
+            // Se o valor for uma função, trata especialmente
+            if ($valor instanceof \Closure) {
+                $this->emit(sprintf("%s%s: %s%s", $this->indentation(), $prop, $this->parseClosure($valor), $comma));
+            } else {
+                $this->emit(sprintf("%s%s: %s%s", $this->indentation(), $prop, $this->toJsLiteral($valor), $comma));
+            }
+        }
+
+        $this->indent--;
+        $this->emit("};");
+    }
+
+    // Delegação para o mesmo formato de objeto (var nome = { ... })
+    public function object(string $nome, array $propriedades): void
+    {
+        $propsParts = [];
+        foreach ($propriedades as $k => $v) {
+            if ($v instanceof \Closure) {
+                $propsParts[] = $k . ': ' . $this->parseClosure($v);
+            } else {
+                $propsParts[] = $k . ': ' . $this->toJsLiteral($v);
+            }
+        }
+        $body = implode(', ', $propsParts);
+        $this->emit("var $nome = { $body };");
+    }
+
+    // Cria um array JS: var nome = [elem1, elem2, ...];
+    public function array(string $nome, array $elementos): void
+    {
+        $elemLits = array_map([$this, 'toJsLiteral'], $elementos);
+        $this->emit("var $nome = [" . implode(', ', $elemLits) . "];");
+    }
+
+    // Define uma variável JS simples
+    public function var(string $nome, mixed $valor): void
+    {
+        $this->emit("var $nome = " . $this->toJsLiteral($valor) . ";");
+    }
+    
+    // Define uma variável com let (ES6)
+    public function let(string $nome, mixed $valor): void
+    {
+        $this->emit("let $nome = " . $this->toJsLiteral($valor) . ";");
+    }
+    
+    // Define uma variável com const (ES6)
+    public function const(string $nome, mixed $valor): void
+    {
+        $this->emit("const $nome = " . $this->toJsLiteral($valor) . ";");
+    }
+
+    // Define uma função JS: function Nome(param1, param2) { ... }
+    public function function(string $nome, array $parametros, string $corpo): void
+    {
+        $params = implode(', ', $parametros);
+        $this->emit("function $nome($params) {");
+        $this->indent++;
+        $this->blockStack[] = 'function';
+        foreach (explode("\n", $corpo) as $line) {
+            $line = rtrim($line);
+            if ($line === '') continue;
+            $this->emit($line);
+        }
+        $this->indent--;
+        array_pop($this->blockStack);
+        $this->emit("}");
+    }
+    
+    // Função anônima
+    public function anonymousFunction(array $parametros, string $corpo): string
+    {
+        $params = implode(', ', $parametros);
+        $lines = [];
+        $lines[] = "function($params) {";
+        foreach (explode("\n", $corpo) as $line) {
+            $line = rtrim($line);
+            if ($line === '') continue;
+            $lines[] = self::INDENT_STR . $line;
+        }
+        $lines[] = "}";
+        return implode(PHP_EOL, $lines);
+    }
+    
+    // Arrow function (ES6)
+    public function arrowFunction(array $parametros, string $corpo): string
+    {
+        $params = implode(', ', $parametros);
+        return "($params) => $corpo";
+    }
+    
+    // Parse de closure PHP para função JS
+    private function parseClosure(\Closure $closure): string
+    {
+        return 'function() { /* PHP Closure converted to JS */ }';
+    }
+
+    // Adiciona um return dentro de uma função já aberta pelo método function
+    public function return_(string $expr): void
+    {
+        $this->emit("return $expr;");
+    }
+    
+    // ============ MÉTODOS DE ALERTA E EXIBIÇÃO ============
+    
+    // Alert tradicional
+    public function alert(string $mensagem): void
+    {
+        // Verifica se a mensagem já está entre aspas
+        if (preg_match('/^(["\']).*\1$/', $mensagem) || preg_match('/^`.*`$/', $mensagem)) {
+            // Já está entre aspas, usar como está
+            $this->emit("alert($mensagem);");
+        } 
+        // Verifica se é uma variável ou expressão (sem espaços, começa com letra/_, etc)
+        elseif (preg_match('/^[a-zA-Z_$][a-zA-Z0-9_$]*(\.[a-zA-Z_$][a-zA-Z0-9_$]*)*$/', $mensagem)) {
+            // É uma variável, não colocar aspas
+            $this->emit("alert($mensagem);");
+        }
+        else {
+            // É uma string literal, adicionar aspas duplas
+            $this->emit("alert(\"" . addslashes($mensagem) . "\");");
+        }
+    }
+    // Para strings literais (mais comum)
+    public function alertText(string $mensagem): void
+        {
+            $this->emit("alert(\"" . addslashes($mensagem) . "\");");
+        }
+
+        // Para variáveis e expressões
+        public function alertExpr(string $expr): void
+        {
+            $this->emit("alert($expr);");
+        }
+    // Confirm (retorna boolean)
+    public function confirm(string $mensagem, ?string $variavel = null): void
+    {
+        $msg = $this->toJsLiteral($mensagem);
+        if ($variavel) {
+            $this->emit("var $variavel = confirm($msg);");
         } else {
-            return $this->codigo;
+            $this->emit("confirm($msg);");
         }
     }
     
-    public function __toString() {
-        return "<script>" . $this->gerarCodigo() . "</script>";
+    // Prompt (entrada de usuário)
+    public function prompt(string $mensagem, ?string $default = null, ?string $variavel = null): void
+    {
+        $msg = $this->toJsLiteral($mensagem);
+        $defaultStr = $default ? ", " . $this->toJsLiteral($default) : "";
+        if ($variavel) {
+            $this->emit("var $variavel = prompt($msg$defaultStr);");
+        } else {
+            $this->emit("prompt($msg$defaultStr);");
+        }
+    }
+    
+    // console.log com múltiplos argumentos
+    public function consoleLog(...$args): void
+    {
+        $argsStr = implode(', ', array_map([$this, 'toJsLiteral'], $args));
+        $this->emit("console.log($argsStr);");
+    }
+    
+    // console.error
+    public function consoleError(...$args): void
+    {
+        $argsStr = implode(', ', array_map([$this, 'toJsLiteral'], $args));
+        $this->emit("console.error($argsStr);");
+    }
+    
+    // console.warn
+    public function consoleWarn(...$args): void
+    {
+        $argsStr = implode(', ', array_map([$this, 'toJsLiteral'], $args));
+        $this->emit("console.warn($argsStr);");
+    }
+    
+    // console.info
+    public function consoleInfo(...$args): void
+    {
+        $argsStr = implode(', ', array_map([$this, 'toJsLiteral'], $args));
+        $this->emit("console.info($argsStr);");
+    }
+    
+    // console.debug
+    public function consoleDebug(...$args): void
+    {
+        $argsStr = implode(', ', array_map([$this, 'toJsLiteral'], $args));
+        $this->emit("console.debug($argsStr);");
+    }
+    
+    // console.table
+    public function consoleTable(mixed $data): void
+    {
+        $this->emit("console.table(" . $this->toJsLiteral($data) . ");");
+    }
+    
+    // console.time / console.timeEnd
+    public function consoleTime(string $label = 'default'): void
+    {
+        $this->emit("console.time('$label');");
+    }
+    
+    public function consoleTimeEnd(string $label = 'default'): void
+    {
+        $this->emit("console.timeEnd('$label');");
+    }
+    
+    // console.count
+    public function consoleCount(string $label = 'default'): void
+    {
+        $this->emit("console.count('$label');");
+    }
+    
+    // console.group / console.groupEnd
+    public function consoleGroup(string $label = ''): void
+    {
+        $this->emit("console.group('$label');");
+        $this->indent++;
+        $this->blockStack[] = 'consoleGroup';
+    }
+    
+    public function consoleGroupCollapsed(string $label = ''): void
+    {
+        $this->emit("console.groupCollapsed('$label');");
+        $this->indent++;
+        $this->blockStack[] = 'consoleGroup';
+    }
+    
+    public function consoleGroupEnd(): void
+    {
+        $this->indent--;
+        array_pop($this->blockStack);
+        $this->emit("console.groupEnd();");
+    }
+    
+    // document.write
+    public function documentWrite(string $conteudo): void
+    {
+        $this->emit("document.write($conteudo);");
+    }
+    
+    // document.writeln
+    public function documentWriteln(string $conteudo): void
+    {
+        $this->emit("document.writeln($conteudo);");
+    }
+    
+    // ============ INTERAÇÃO COM HTML ============
+    
+    // getElementById
+    public function getElementById(string $id, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = document.getElementById('$id');");
+        } else {
+            $this->emit("document.getElementById('$id');");
+        }
+    }
+    
+    // getElementsByClassName
+    public function getElementsByClassName(string $classe, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = document.getElementsByClassName('$classe');");
+        } else {
+            $this->emit("document.getElementsByClassName('$classe');");
+        }
+    }
+    
+    // getElementsByTagName
+    public function getElementsByTagName(string $tag, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = document.getElementsByTagName('$tag');");
+        } else {
+            $this->emit("document.getElementsByTagName('$tag');");
+        }
+    }
+    
+    // querySelector
+    public function querySelector(string $seletor, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = document.querySelector('$seletor');");
+        } else {
+            $this->emit("document.querySelector('$seletor');");
+        }
+    }
+    
+    // querySelectorAll
+    public function querySelectorAll(string $seletor, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = document.querySelectorAll('$seletor');");
+        } else {
+            $this->emit("document.querySelectorAll('$seletor');");
+        }
+    }
+    
+    // createElement
+    public function createElement(string $tag, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = document.createElement('$tag');");
+        } else {
+            $this->emit("document.createElement('$tag');");
+        }
+    }
+    
+    // createTextNode
+    public function createTextNode(string $texto, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = document.createTextNode('$texto');");
+        } else {
+            $this->emit("document.createTextNode('$texto');");
+        }
+    }
+    
+    // appendChild
+    public function appendChild(string $elemento, string $filho): void
+    {
+        $this->emit("$elemento.appendChild($filho);");
+    }
+    
+    // removeChild
+    public function removeChild(string $elemento, string $filho): void
+    {
+        $this->emit("$elemento.removeChild($filho);");
+    }
+    
+    // replaceChild
+    public function replaceChild(string $elemento, string $novo, string $antigo): void
+    {
+        $this->emit("$elemento.replaceChild($novo, $antigo);");
+    }
+    
+    // insertBefore
+    public function insertBefore(string $elemento, string $novo, string $referencia): void
+    {
+        $this->emit("$elemento.insertBefore($novo, $referencia);");
+    }
+    
+    // setAttribute
+    public function setAttribute(string $elemento, string $atributo, string $valor): void
+    {
+        $this->emit("$elemento.setAttribute('$atributo', $valor);");
+    }
+    
+    // getAttribute
+    public function getAttribute(string $elemento, string $atributo, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = $elemento.getAttribute('$atributo');");
+        } else {
+            $this->emit("$elemento.getAttribute('$atributo');");
+        }
+    }
+    
+    // removeAttribute
+    public function removeAttribute(string $elemento, string $atributo): void
+    {
+        $this->emit("$elemento.removeAttribute('$atributo');");
+    }
+    
+    // classList.add
+    public function classListAdd(string $elemento, string $classe): void
+    {
+        $this->emit("$elemento.classList.add('$classe');");
+    }
+    
+    // classList.remove
+    public function classListRemove(string $elemento, string $classe): void
+    {
+        $this->emit("$elemento.classList.remove('$classe');");
+    }
+    
+    // classList.toggle
+    public function classListToggle(string $elemento, string $classe): void
+    {
+        $this->emit("$elemento.classList.toggle('$classe');");
+    }
+    
+    // classList.contains
+    public function classListContains(string $elemento, string $classe, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = $elemento.classList.contains('$classe');");
+        } else {
+            $this->emit("$elemento.classList.contains('$classe');");
+        }
+    }
+    
+    // innerHTML
+    public function innerHTML(string $elemento, string $conteudo): void
+    {
+        $this->emit("$elemento.innerHTML = $conteudo;");
+    }
+    
+    // innerText
+    public function innerText(string $elemento, string $texto): void
+    {
+        $this->emit("$elemento.innerText = $texto;");
+    }
+    
+    // textContent
+    public function textContent(string $elemento, string $texto): void
+    {
+        $this->emit("$elemento.textContent = $texto;");
+    }
+    
+    // style
+    public function style(string $elemento, string $propriedade, string $valor): void
+    {
+        $this->emit("$elemento.style.$propriedade = '$valor';");
+    }
+    
+    // addEventListener
+    public function addEventListener(string $elemento, string $evento, string $funcao, bool $useCapture = false): void
+    {
+        $capture = $useCapture ? 'true' : 'false';
+        $this->emit("$elemento.addEventListener('$evento', $funcao, $capture);");
+    }
+    
+    // removeEventListener
+    public function removeEventListener(string $elemento, string $evento, string $funcao, bool $useCapture = false): void
+    {
+        $capture = $useCapture ? 'true' : 'false';
+        $this->emit("$elemento.removeEventListener('$evento', $funcao, $capture);");
+    }
+    
+    // dispatchEvent
+    public function dispatchEvent(string $elemento, string $evento): void
+    {
+        $this->emit("$elemento.dispatchEvent($evento);");
+    }
+    
+    // createEvent
+    public function createEvent(string $tipo, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = document.createEvent('$tipo');");
+        } else {
+            $this->emit("document.createEvent('$tipo');");
+        }
+    }
+    
+    // ============ LOOPS ============
+    
+    // for padrão
+    public function for_(string $init, string $cond, string $step): void
+    {
+        $this->emit("for ($init; $cond; $step) {");
+        $this->indent++;
+        $this->blockStack[] = 'for';
+    }
+
+    public function endFor(): void
+    {
+        $this->indent--;
+        array_pop($this->blockStack);
+        $this->emit("}");
+    }
+    
+    // for...in (itera sobre propriedades de objeto)
+    public function forIn(string $variavel, string $objeto): void
+    {
+        $this->emit("for ($variavel in $objeto) {");
+        $this->indent++;
+        $this->blockStack[] = 'for';
+    }
+    
+    // for...of (ES6 - itera sobre valores de iterável)
+    public function forOf(string $variavel, string $iteravel): void
+    {
+        $this->emit("for ($variavel of $iteravel) {");
+        $this->indent++;
+        $this->blockStack[] = 'for';
+    }
+    
+    // forEach (método de array)
+    public function forEach(string $array, array $parametros, string $corpo): void
+    {
+        $params = implode(', ', $parametros);
+        $this->emit("$array.forEach(function($params) {");
+        $this->indent++;
+        foreach (explode("\n", $corpo) as $line) {
+            $line = rtrim($line);
+            if ($line === '') continue;
+            $this->emit($line);
+        }
+        $this->indent--;
+        $this->emit("});");
+    }
+    
+    // forEach com arrow function
+    public function forEachArrow(string $array, array $parametros, string $corpo): void
+    {
+        $params = implode(', ', $parametros);
+        $this->emit("$array.forEach(($params) => $corpo);");
+    }
+    
+    // while
+    public function while_(string $cond): void
+    {
+        $this->emit("while ($cond) {");
+        $this->indent++;
+        $this->blockStack[] = 'while';
+    }
+
+    public function endWhile(): void
+    {
+        $this->indent--;
+        array_pop($this->blockStack);
+        $this->emit("}");
+    }
+    
+    // do...while
+    public function do_(): void
+    {
+        $this->emit("do {");
+        $this->indent++;
+        $this->blockStack[] = 'do';
+    }
+    
+    public function doWhile(string $cond): void
+    {
+        $this->indent--;
+        array_pop($this->blockStack);
+        $this->emit("} while ($cond);");
+    }
+    
+    // ============ ESTRUTURAS DE CONTROLE ADICIONAIS ============
+    
+    // if
+    public function if_(string $cond): void
+    {
+        $this->emit("if ($cond) {");
+        $this->indent++;
+        $this->blockStack[] = 'if';
+    }
+
+    public function else_(): void
+    {
+        $this->indent--;
+        array_pop($this->blockStack);
+        $this->emit("} else {");
+        $this->indent++;
+        $this->blockStack[] = 'else';
+    }
+    
+    public function elseIf_(string $cond): void
+    {
+        $this->indent--;
+        array_pop($this->blockStack);
+        $this->emit("} else if ($cond) {");
+        $this->indent++;
+        $this->blockStack[] = 'if';
+    }
+
+    public function endif(): void
+    {
+        $this->indent--;
+        array_pop($this->blockStack);
+        $this->emit("}");
+    }
+    
+    // switch
+    public function switch_(string $expr): void
+    {
+        $this->emit("switch ($expr) {");
+        $this->indent++;
+        $this->blockStack[] = 'switch';
+    }
+    
+    public function case_(string $valor): void
+    {
+        $this->emit("case $valor:");
+        $this->indent++;
+        $this->blockStack[] = 'case';
+    }
+    
+    public function default_(): void
+    {
+        $this->emit("default:");
+        $this->indent++;
+        $this->blockStack[] = 'default';
+    }
+    
+    public function break_(): void
+    {
+        $this->emit("break;");
+    }
+    
+    public function endSwitch(): void
+    {
+        // Fecha todos os cases abertos
+        while (!empty($this->blockStack) && end($this->blockStack) !== 'switch') {
+            $this->indent--;
+            array_pop($this->blockStack);
+        }
+        $this->indent--;
+        array_pop($this->blockStack);
+        $this->emit("}");
+    }
+    
+    // try...catch...finally
+    public function try_(): void
+    {
+        $this->emit("try {");
+        $this->indent++;
+        $this->blockStack[] = 'try';
+    }
+    
+    public function catch_(string $erro = 'e'): void
+    {
+        $this->indent--;
+        array_pop($this->blockStack);
+        $this->emit("} catch ($erro) {");
+        $this->indent++;
+        $this->blockStack[] = 'catch';
+    }
+    
+    public function finally_(): void
+    {
+        $this->indent--;
+        array_pop($this->blockStack);
+        $this->emit("} finally {");
+        $this->indent++;
+        $this->blockStack[] = 'finally';
+    }
+    
+    public function endTry(): void
+    {
+        $this->indent--;
+        array_pop($this->blockStack);
+        $this->emit("}");
+    }
+    
+    // throw
+    public function throw_(string $erro): void
+    {
+        $this->emit("throw $erro;");
+    }
+    
+    // ============ OPERADORES E EXPRESSÕES ============
+    
+    // typeof
+    public function typeof(string $expr, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = typeof $expr;");
+        } else {
+            $this->emit("typeof $expr;");
+        }
+    }
+    
+    // instanceof
+    public function instanceof(string $objeto, string $classe, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = $objeto instanceof $classe;");
+        } else {
+            $this->emit("$objeto instanceof $classe;");
+        }
+    }
+    
+    // delete (propriedade de objeto)
+    public function delete(string $propriedade): void
+    {
+        $this->emit("delete $propriedade;");
+    }
+    
+    // void
+    public function void(string $expr): void
+    {
+        $this->emit("void($expr);");
+    }
+    
+    // in (verifica se propriedade existe em objeto)
+    public function in(string $propriedade, string $objeto, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = $propriedade in $objeto;");
+        } else {
+            $this->emit("$propriedade in $objeto;");
+        }
+    }
+    
+    // ============ TIMERS ============
+    
+    // setTimeout
+    public function setTimeout(string $funcao, int $milissegundos, ...$args): void
+    {
+        $argsStr = !empty($args) ? ', ' . implode(', ', array_map([$this, 'toJsLiteral'], $args)) : '';
+        $this->emit("setTimeout($funcao, $milissegundos$argsStr);");
+    }
+    
+    // setInterval
+    public function setInterval(string $funcao, int $milissegundos, ...$args): void
+    {
+        $argsStr = !empty($args) ? ', ' . implode(', ', array_map([$this, 'toJsLiteral'], $args)) : '';
+        $this->emit("setInterval($funcao, $milissegundos$argsStr);");
+    }
+    
+    // clearTimeout
+    public function clearTimeout(string $timeoutId): void
+    {
+        $this->emit("clearTimeout($timeoutId);");
+    }
+    
+    // clearInterval
+    public function clearInterval(string $intervalId): void
+    {
+        $this->emit("clearInterval($intervalId);");
+    }
+    
+    // ============ JSON ============
+    
+    // JSON.parse
+    public function jsonParse(string $json, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = JSON.parse($json);");
+        } else {
+            $this->emit("JSON.parse($json);");
+        }
+    }
+    
+    // JSON.stringify
+    public function jsonStringify(mixed $valor, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = JSON.stringify(" . $this->toJsLiteral($valor) . ");");
+        } else {
+            $this->emit("JSON.stringify(" . $this->toJsLiteral($valor) . ");");
+        }
+    }
+    
+    // ============ MATH ============
+    
+    // Math methods
+    public function mathRandom(?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = Math.random();");
+        } else {
+            $this->emit("Math.random();");
+        }
+    }
+    
+    public function mathFloor(string $numero, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = Math.floor($numero);");
+        } else {
+            $this->emit("Math.floor($numero);");
+        }
+    }
+    
+    public function mathCeil(string $numero, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = Math.ceil($numero);");
+        } else {
+            $this->emit("Math.ceil($numero);");
+        }
+    }
+    
+    public function mathRound(string $numero, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = Math.round($numero);");
+        } else {
+            $this->emit("Math.round($numero);");
+        }
+    }
+    
+    public function mathMax(array $numeros, ?string $variavel = null): void
+    {
+        $numsStr = implode(', ', $numeros);
+        if ($variavel) {
+            $this->emit("var $variavel = Math.max($numsStr);");
+        } else {
+            $this->emit("Math.max($numsStr);");
+        }
+    }
+    
+    public function mathMin(array $numeros, ?string $variavel = null): void
+    {
+        $numsStr = implode(', ', $numeros);
+        if ($variavel) {
+            $this->emit("var $variavel = Math.min($numsStr);");
+        } else {
+            $this->emit("Math.min($numsStr);");
+        }
+    }
+    
+    // ============ DATE ============
+    
+    // new Date()
+    public function newDate(?string $variavel = null, ...$args): void
+    {
+        $argsStr = !empty($args) ? implode(', ', array_map([$this, 'toJsLiteral'], $args)) : '';
+        if ($variavel) {
+            $this->emit("var $variavel = new Date($argsStr);");
+        } else {
+            $this->emit("new Date($argsStr);");
+        }
+    }
+    
+    // Date.now()
+    public function dateNow(?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = Date.now();");
+        } else {
+            $this->emit("Date.now();");
+        }
+    }
+    
+    // ============ REGEX ============
+    
+    // new RegExp()
+    public function newRegExp(string $pattern, string $flags = '', ?string $variavel = null): void
+    {
+        $flagsStr = $flags ? ", '$flags'" : '';
+        if ($variavel) {
+            $this->emit("var $variavel = new RegExp('$pattern'$flagsStr);");
+        } else {
+            $this->emit("new RegExp('$pattern'$flagsStr);");
+        }
+    }
+    
+    // Literal regex /pattern/flags
+    public function regexLiteral(string $pattern, string $flags = ''): string
+    {
+        return "/$pattern/$flags";
+    }
+    
+    // ============ OUTROS MÉTODOS ÚTEIS ============
+    
+    // eval (cuidado ao usar!)
+    public function eval(string $codigo): void
+    {
+        $this->emit("eval($codigo);");
+    }
+    
+    // encodeURI / decodeURI
+    public function encodeURI(string $uri, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = encodeURI($uri);");
+        } else {
+            $this->emit("encodeURI($uri);");
+        }
+    }
+    
+    public function decodeURI(string $uri, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = decodeURI($uri);");
+        } else {
+            $this->emit("decodeURI($uri);");
+        }
+    }
+    
+    public function encodeURIComponent(string $uri, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = encodeURIComponent($uri);");
+        } else {
+            $this->emit("encodeURIComponent($uri);");
+        }
+    }
+    
+    public function decodeURIComponent(string $uri, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = decodeURIComponent($uri);");
+        } else {
+            $this->emit("decodeURIComponent($uri);");
+        }
+    }
+    
+    // isNaN
+    public function isNaN(string $valor, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = isNaN($valor);");
+        } else {
+            $this->emit("isNaN($valor);");
+        }
+    }
+    
+    // isFinite
+    public function isFinite(string $valor, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = isFinite($valor);");
+        } else {
+            $this->emit("isFinite($valor);");
+        }
+    }
+    
+    // parseInt
+    // parseInt
+    public function parseInt(string $valor, int $base = 10, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = parseInt($valor, $base);");
+        } else {
+            $this->emit("parseInt($valor, $base);");
+        }
+    }
+    
+    // parseFloat
+    public function parseFloat(string $valor, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = parseFloat($valor);");
+        } else {
+            $this->emit("parseFloat($valor);");
+        }
+    }
+    
+    // Number
+    public function number(string $valor, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = Number($valor);");
+        } else {
+            $this->emit("Number($valor);");
+        }
+    }
+    
+    // String
+    public function string(string $valor, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = String($valor);");
+        } else {
+            $this->emit("String($valor);");
+        }
+    }
+    
+    // Boolean
+    public function boolean(string $valor, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = Boolean($valor);");
+        } else {
+            $this->emit("Boolean($valor);");
+        }
+    }
+    
+    // Array.isArray
+    public function isArray(string $valor, ?string $variavel = null): void
+    {
+        if ($variavel) {
+            $this->emit("var $variavel = Array.isArray($valor);");
+        } else {
+            $this->emit("Array.isArray($valor);");
+        }
+    }
+    
+    // ============ MÉTODOS DE STRING ============
+    
+    // length
+    public function length(string $variavel, ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = $variavel.length;");
+        } else {
+            $this->emit("$variavel.length;");
+        }
+    }
+    
+    // charAt
+    public function charAt(string $variavel, int $indice, ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = $variavel.charAt($indice);");
+        } else {
+            $this->emit("$variavel.charAt($indice);");
+        }
+    }
+    
+    // charCodeAt
+    public function charCodeAt(string $variavel, int $indice, ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = $variavel.charCodeAt($indice);");
+        } else {
+            $this->emit("$variavel.charCodeAt($indice);");
+        }
+    }
+    
+    // concat
+    public function concat(string $variavel, array $strings, ?string $destino = null): void
+    {
+        $strs = implode(', ', array_map([$this, 'toJsLiteral'], $strings));
+        if ($destino) {
+            $this->emit("var $destino = $variavel.concat($strs);");
+        } else {
+            $this->emit("$variavel.concat($strs);");
+        }
+    }
+    
+    // indexOf
+    public function indexOf(string $variavel, string $busca, int $fromIndex = 0, ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = $variavel.indexOf($busca, $fromIndex);");
+        } else {
+            $this->emit("$variavel.indexOf($busca, $fromIndex);");
+        }
+    }
+    
+    // lastIndexOf
+    public function lastIndexOf(string $variavel, string $busca, ?int $fromIndex = null, ?string $destino = null): void
+    {
+        $from = $fromIndex !== null ? ", $fromIndex" : '';
+        if ($destino) {
+            $this->emit("var $destino = $variavel.lastIndexOf($busca$from);");
+        } else {
+            $this->emit("$variavel.lastIndexOf($busca$from);");
+        }
+    }
+    
+    // slice
+    public function slice(string $variavel, int $inicio, ?int $fim = null, ?string $destino = null): void
+    {
+        $fimStr = $fim !== null ? ", $fim" : '';
+        if ($destino) {
+            $this->emit("var $destino = $variavel.slice($inicio$fimStr);");
+        } else {
+            $this->emit("$variavel.slice($inicio$fimStr);");
+        }
+    }
+    
+    // substring
+    public function substring(string $variavel, int $inicio, ?int $fim = null, ?string $destino = null): void
+    {
+        $fimStr = $fim !== null ? ", $fim" : '';
+        if ($destino) {
+            $this->emit("var $destino = $variavel.substring($inicio$fimStr);");
+        } else {
+            $this->emit("$variavel.substring($inicio$fimStr);");
+        }
+    }
+    
+    // substr
+    public function substr(string $variavel, int $inicio, ?int $comprimento = null, ?string $destino = null): void
+    {
+        $compStr = $comprimento !== null ? ", $comprimento" : '';
+        if ($destino) {
+            $this->emit("var $destino = $variavel.substr($inicio$compStr);");
+        } else {
+            $this->emit("$variavel.substr($inicio$compStr);");
+        }
+    }
+    
+    // toUpperCase
+    public function toUpperCase(string $variavel, ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = $variavel.toUpperCase();");
+        } else {
+            $this->emit("$variavel.toUpperCase();");
+        }
+    }
+    
+    // toLowerCase
+    public function toLowerCase(string $variavel, ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = $variavel.toLowerCase();");
+        } else {
+            $this->emit("$variavel.toLowerCase();");
+        }
+    }
+    
+    // trim
+    public function trim(string $variavel, ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = $variavel.trim();");
+        } else {
+            $this->emit("$variavel.trim();");
+        }
+    }
+    
+    // trimStart / trimLeft
+    public function trimStart(string $variavel, ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = $variavel.trimStart();");
+        } else {
+            $this->emit("$variavel.trimStart();");
+        }
+    }
+    
+    // trimEnd / trimRight
+    public function trimEnd(string $variavel, ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = $variavel.trimEnd();");
+        } else {
+            $this->emit("$variavel.trimEnd();");
+        }
+    }
+    
+    // padStart
+    public function padStart(string $variavel, int $comprimento, string $preenchimento = ' ', ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = $variavel.padStart($comprimento, '$preenchimento');");
+        } else {
+            $this->emit("$variavel.padStart($comprimento, '$preenchimento');");
+        }
+    }
+    
+    // padEnd
+    public function padEnd(string $variavel, int $comprimento, string $preenchimento = ' ', ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = $variavel.padEnd($comprimento, '$preenchimento');");
+        } else {
+            $this->emit("$variavel.padEnd($comprimento, '$preenchimento');");
+        }
+    }
+    
+    // startsWith
+    public function startsWith(string $variavel, string $busca, ?int $posicao = null, ?string $destino = null): void
+    {
+        $posStr = $posicao !== null ? ", $posicao" : '';
+        if ($destino) {
+            $this->emit("var $destino = $variavel.startsWith($busca$posStr);");
+        } else {
+            $this->emit("$variavel.startsWith($busca$posStr);");
+        }
+    }
+    
+    // endsWith
+    public function endsWith(string $variavel, string $busca, ?int $comprimento = null, ?string $destino = null): void
+    {
+        $compStr = $comprimento !== null ? ", $comprimento" : '';
+        if ($destino) {
+            $this->emit("var $destino = $variavel.endsWith($busca$compStr);");
+        } else {
+            $this->emit("$variavel.endsWith($busca$compStr);");
+        }
+    }
+    
+    // includes
+    public function includes(string $variavel, string $busca, ?int $posicao = null, ?string $destino = null): void
+    {
+        $posStr = $posicao !== null ? ", $posicao" : '';
+        if ($destino) {
+            $this->emit("var $destino = $variavel.includes($busca$posStr);");
+        } else {
+            $this->emit("$variavel.includes($busca$posStr);");
+        }
+    }
+    
+    // replace
+    public function replace(string $variavel, string $busca, string $substituicao, ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = $variavel.replace($busca, $substituicao);");
+        } else {
+            $this->emit("$variavel.replace($busca, $substituicao);");
+        }
+    }
+    
+    // replaceAll
+    public function replaceAll(string $variavel, string $busca, string $substituicao, ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = $variavel.replaceAll($busca, $substituicao);");
+        } else {
+            $this->emit("$variavel.replaceAll($busca, $substituicao);");
+        }
+    }
+    
+    // split
+    public function split(string $variavel, string $separador, ?int $limite = null, ?string $destino = null): void
+    {
+        $limiteStr = $limite !== null ? ", $limite" : '';
+        if ($destino) {
+            $this->emit("var $destino = $variavel.split($separador$limiteStr);");
+        } else {
+            $this->emit("$variavel.split($separador$limiteStr);");
+        }
+    }
+    
+    // ============ MÉTODOS DE ARRAY ============
+    
+    // push
+    public function push(string $array, array $elementos): void
+    {
+        $elems = implode(', ', array_map([$this, 'toJsLiteral'], $elementos));
+        $this->emit("$array.push($elems);");
+    }
+    
+    // pop
+    public function pop(string $array, ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = $array.pop();");
+        } else {
+            $this->emit("$array.pop();");
+        }
+    }
+    
+    // shift
+    public function shift(string $array, ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = $array.shift();");
+        } else {
+            $this->emit("$array.shift();");
+        }
+    }
+    
+    // unshift
+    public function unshift(string $array, array $elementos): void
+    {
+        $elems = implode(', ', array_map([$this, 'toJsLiteral'], $elementos));
+        $this->emit("$array.unshift($elems);");
+    }
+    
+    // splice
+    public function splice(string $array, int $inicio, ?int $deleteCount = null, array $elementos = [], ?string $destino = null): void
+    {
+        $delStr = $deleteCount !== null ? ", $deleteCount" : '';
+        $elems = !empty($elementos) ? ', ' . implode(', ', array_map([$this, 'toJsLiteral'], $elementos)) : '';
+        
+        if ($destino) {
+            $this->emit("var $destino = $array.splice($inicio$delStr$elems);");
+        } else {
+            $this->emit("$array.splice($inicio$delStr$elems);");
+        }
+    }
+    
+    // slice (array)
+    public function arraySlice(string $array, ?int $inicio = null, ?int $fim = null, ?string $destino = null): void
+    {
+        $inicioStr = $inicio !== null ? $inicio : '0';
+        $fimStr = $fim !== null ? ", $fim" : '';
+        
+        if ($destino) {
+            $this->emit("var $destino = $array.slice($inicioStr$fimStr);");
+        } else {
+            $this->emit("$array.slice($inicioStr$fimStr);");
+        }
+    }
+    
+    // concat (array)
+    public function arrayConcat(string $array, array $arrays, ?string $destino = null): void
+    {
+        $arrs = implode(', ', $arrays);
+        if ($destino) {
+            $this->emit("var $destino = $array.concat($arrs);");
+        } else {
+            $this->emit("$array.concat($arrs);");
+        }
+    }
+    
+    // join
+    public function join(string $array, string $separador = ',', ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = $array.join('$separador');");
+        } else {
+            $this->emit("$array.join('$separador');");
+        }
+    }
+    
+    // indexOf (array)
+    public function arrayIndexOf(string $array, string $busca, ?int $fromIndex = null, ?string $destino = null): void
+    {
+        $fromStr = $fromIndex !== null ? ", $fromIndex" : '';
+        if ($destino) {
+            $this->emit("var $destino = $array.indexOf($busca$fromStr);");
+        } else {
+            $this->emit("$array.indexOf($busca$fromStr);");
+        }
+    }
+    
+    // lastIndexOf (array)
+    public function arrayLastIndexOf(string $array, string $busca, ?int $fromIndex = null, ?string $destino = null): void
+    {
+        $fromStr = $fromIndex !== null ? ", $fromIndex" : '';
+        if ($destino) {
+            $this->emit("var $destino = $array.lastIndexOf($busca$fromStr);");
+        } else {
+            $this->emit("$array.lastIndexOf($busca$fromStr);");
+        }
+    }
+    
+    // includes (array)
+    public function arrayIncludes(string $array, string $busca, ?int $fromIndex = null, ?string $destino = null): void
+    {
+        $fromStr = $fromIndex !== null ? ", $fromIndex" : '';
+        if ($destino) {
+            $this->emit("var $destino = $array.includes($busca$fromStr);");
+        } else {
+            $this->emit("$array.includes($busca$fromStr);");
+        }
+    }
+    
+    // find
+    public function find(string $array, string $callback, ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = $array.find($callback);");
+        } else {
+            $this->emit("$array.find($callback);");
+        }
+    }
+    
+    // findIndex
+    public function findIndex(string $array, string $callback, ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = $array.findIndex($callback);");
+        } else {
+            $this->emit("$array.findIndex($callback);");
+        }
+    }
+    
+    // filter
+    public function filter(string $array, string $callback, ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = $array.filter($callback);");
+        } else {
+            $this->emit("$array.filter($callback);");
+        }
+    }
+    
+    // map
+    public function map(string $array, string $callback, ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = $array.map($callback);");
+        } else {
+            $this->emit("$array.map($callback);");
+        }
+    }
+    
+    // reduce
+    public function reduce(string $array, string $callback, ?string $initialValue = null, ?string $destino = null): void
+    {
+        $initialStr = $initialValue !== null ? ", $initialValue" : '';
+        if ($destino) {
+            $this->emit("var $destino = $array.reduce($callback$initialStr);");
+        } else {
+            $this->emit("$array.reduce($callback$initialStr);");
+        }
+    }
+    
+    // reduceRight
+    public function reduceRight(string $array, string $callback, ?string $initialValue = null, ?string $destino = null): void
+    {
+        $initialStr = $initialValue !== null ? ", $initialValue" : '';
+        if ($destino) {
+            $this->emit("var $destino = $array.reduceRight($callback$initialStr);");
+        } else {
+            $this->emit("$array.reduceRight($callback$initialStr);");
+        }
+    }
+    
+    // some
+    public function some(string $array, string $callback, ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = $array.some($callback);");
+        } else {
+            $this->emit("$array.some($callback);");
+        }
+    }
+    
+    // every
+    public function every(string $array, string $callback, ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = $array.every($callback);");
+        } else {
+            $this->emit("$array.every($callback);");
+        }
+    }
+    
+    // sort
+    public function sort(string $array, ?string $callback = null): void
+    {
+        if ($callback) {
+            $this->emit("$array.sort($callback);");
+        } else {
+            $this->emit("$array.sort();");
+        }
+    }
+    
+    // reverse
+    public function reverse(string $array): void
+    {
+        $this->emit("$array.reverse();");
+    }
+    
+    // ============ MÉTODOS DE OBJETO ============
+    
+    // Object.keys
+    public function objectKeys(string $objeto, ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = Object.keys($objeto);");
+        } else {
+            $this->emit("Object.keys($objeto);");
+        }
+    }
+    
+    // Object.values
+    public function objectValues(string $objeto, ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = Object.values($objeto);");
+        } else {
+            $this->emit("Object.values($objeto);");
+        }
+    }
+    
+    // Object.entries
+    public function objectEntries(string $objeto, ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = Object.entries($objeto);");
+        } else {
+            $this->emit("Object.entries($objeto);");
+        }
+    }
+    
+    // Object.assign
+    public function objectAssign(string $target, array $sources, ?string $destino = null): void
+    {
+        $sourcesStr = implode(', ', $sources);
+        if ($destino) {
+            $this->emit("var $destino = Object.assign($target, $sourcesStr);");
+        } else {
+            $this->emit("Object.assign($target, $sourcesStr);");
+        }
+    }
+    
+    // Object.freeze
+    public function objectFreeze(string $objeto): void
+    {
+        $this->emit("Object.freeze($objeto);");
+    }
+    
+    // Object.seal
+    public function objectSeal(string $objeto): void
+    {
+        $this->emit("Object.seal($objeto);");
+    }
+    
+    // Object.create
+    public function objectCreate(?string $prototype = null, ?array $properties = null, ?string $destino = null): void
+    {
+        $protoStr = $prototype ?: 'null';
+        $propsStr = $properties ? ', ' . $this->toJsLiteral($properties) : '';
+        
+        if ($destino) {
+            $this->emit("var $destino = Object.create($protoStr$propsStr);");
+        } else {
+            $this->emit("Object.create($protoStr$propsStr);");
+        }
+    }
+    
+    // Object.defineProperty
+    public function objectDefineProperty(string $objeto, string $propriedade, array $descritor): void
+    {
+        $this->emit("Object.defineProperty($objeto, '$propriedade', " . $this->toJsLiteral($descritor) . ");");
+    }
+    
+    // Object.defineProperties
+    public function objectDefineProperties(string $objeto, array $propriedades): void
+    {
+        $this->emit("Object.defineProperties($objeto, " . $this->toJsLiteral($propriedades) . ");");
+    }
+    
+    // Object.getPrototypeOf
+    public function objectGetPrototypeOf(string $objeto, ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = Object.getPrototypeOf($objeto);");
+        } else {
+            $this->emit("Object.getPrototypeOf($objeto);");
+        }
+    }
+    
+    // Object.setPrototypeOf
+    public function objectSetPrototypeOf(string $objeto, string $prototype): void
+    {
+        $this->emit("Object.setPrototypeOf($objeto, $prototype);");
+    }
+    
+    // ============ WINDOW/DOCUMENT ============
+    
+    // window.location
+    public function windowLocation(string $propriedade = 'href', ?string $valor = null): void
+    {
+        if ($valor !== null) {
+            $this->emit("window.location.$propriedade = $valor;");
+        } else {
+            $this->emit("window.location.$propriedade;");
+        }
+    }
+    
+    // window.open
+    public function windowOpen(string $url, string $nome = '_blank', string $specs = ''): void
+    {
+        $specsStr = $specs ? ", '$specs'" : '';
+        $this->emit("window.open('$url', '$nome'$specsStr);");
+    }
+    
+    // window.close
+    public function windowClose(): void
+    {
+        $this->emit("window.close();");
+    }
+    
+    // window.alert (alias para alert)
+    public function windowAlert(string $mensagem): void
+    {
+        $this->alert($mensagem);
+    }
+    
+    // window.confirm (alias para confirm)
+    public function windowConfirm(string $mensagem, ?string $variavel = null): void
+    {
+        $this->confirm($mensagem, $variavel);
+    }
+    
+    // window.prompt (alias para prompt)
+    public function windowPrompt(string $mensagem, ?string $default = null, ?string $variavel = null): void
+    {
+        $this->prompt($mensagem, $default, $variavel);
+    }
+    
+    // window.scrollTo
+    public function windowScrollTo(int $x, int $y): void
+    {
+        $this->emit("window.scrollTo($x, $y);");
+    }
+    
+    // window.scrollBy
+    public function windowScrollBy(int $x, int $y): void
+    {
+        $this->emit("window.scrollBy($x, $y);");
+    }
+    
+    // ============ EVENTOS ============
+    
+    // Eventos de elemento
+    public function onClick(string $elemento, string $funcao): void
+    {
+        $this->emit("$elemento.onclick = $funcao;");
+    }
+    
+    public function onLoad(string $elemento, string $funcao): void
+    {
+        $this->emit("$elemento.onload = $funcao;");
+    }
+    
+    public function onChange(string $elemento, string $funcao): void
+    {
+        $this->emit("$elemento.onchange = $funcao;");
+    }
+    
+    public function onInput(string $elemento, string $funcao): void
+    {
+        $this->emit("$elemento.oninput = $funcao;");
+    }
+    
+    public function onMouseOver(string $elemento, string $funcao): void
+    {
+        $this->emit("$elemento.onmouseover = $funcao;");
+    }
+    
+    public function onMouseOut(string $elemento, string $funcao): void
+    {
+        $this->emit("$elemento.onmouseout = $funcao;");
+    }
+    
+    public function onSubmit(string $elemento, string $funcao): void
+    {
+        $this->emit("$elemento.onsubmit = $funcao;");
+    }
+    
+    public function onKeyDown(string $elemento, string $funcao): void
+    {
+        $this->emit("$elemento.onkeydown = $funcao;");
+    }
+    
+    public function onKeyUp(string $elemento, string $funcao): void
+    {
+        $this->emit("$elemento.onkeyup = $funcao;");
+    }
+    
+    // ============ MÉTODOS DE CONTROLE DE FLUXO ============
+    
+    // continue
+    public function continue_(): void
+    {
+        $this->emit("continue;");
+    }
+    
+    
+    // label
+    public function label(string $nome): void
+    {
+        $this->emit("$nome:");
+    }
+    
+    // with (não recomendado, mas incluído para completude)
+    public function with_(string $objeto): void
+    {
+        $this->emit("with ($objeto) {");
+        $this->indent++;
+        $this->blockStack[] = 'with';
+    }
+    
+    public function endWith(): void
+    {
+        $this->indent--;
+        array_pop($this->blockStack);
+        $this->emit("}");
+    }
+    
+    // debugger
+    public function debugger(): void
+    {
+        $this->emit("debugger;");
+    }
+    
+    // "use strict"
+    public function useStrict(): void
+    {
+        $this->emit('"use strict";');
+    }
+    
+    // ============ MÉTODOS DE COMENTÁRIO ============
+    
+    // Comentário de linha
+    public function comment(string $texto): void
+    {
+        $this->emit("// $texto");
+    }
+    
+    // Comentário de múltiplas linhas
+    public function commentBlock(string $texto): void
+    {
+        $this->emit("/* $texto */");
+    }
+    
+    // ============ MÉTODOS FINAIS ============
+    
+    // Fecha todos os blocos abertos (útil para debug ou fechamento automático)
+    public function closeAllBlocks(): void
+    {
+        while (!empty($this->blockStack)) {
+            $lastBlock = array_pop($this->blockStack);
+            $this->indent--;
+            
+            // Alguns blocos precisam de fechamento especial
+            if (in_array($lastBlock, ['switch', 'case', 'default'])) {
+                // Já tratado no endSwitch
+            } else {
+                $this->emit("}");
+            }
+        }
+    }
+    
+    // Limpa todo o código gerado
+    public function clear(): void
+    {
+        $this->lines = [];
+        $this->indent = 0;
+        $this->blockStack = [];
+    }
+    
+    // Converte o conteúdo coletado em uma string pronta para HTML
+    public function __toString(): string
+    {
+        // Fecha blocos automaticamente se necessário
+        $this->closeAllBlocks();
+        
+        $codigo = implode(PHP_EOL, $this->lines);
+        return "<script>\n$codigo\n</script>";
     }
 }
-?>
