@@ -16,6 +16,15 @@ class JsBuilder
     }
 
     // indentação atual
+    /**
+     * Emite código JavaScript bruto (use com cuidado)
+     * @param string $codigo Código JavaScript a ser emitido
+     */
+    public function raw(string $codigo): void
+    {
+        $this->emit($codigo);
+    }
+
     private function indentation(): string
     {
         return str_repeat(self::INDENT_STR, $this->indent);
@@ -32,37 +41,59 @@ class JsBuilder
             return $value ? 'true' : 'false';
         }
         
-        if (is_numeric($value)) {
+        if (is_numeric($value) && !is_string($value)) {
             return (string)$value;
         }
         
         if (is_string($value)) {
-            // Verificar se é uma expressão JS que NÃO deve ser escapada
-            if ($this->isJsExpression($value)) {
-                return $value; // Retorna como está (variável, chamada de função, etc)
+            // Verificar se o valor já está entre aspas
+            if (preg_match('/^(["\']).*\1$/u', $value) || preg_match('/^`.*`$/u', $value)) {
+                return $value; // Já está entre aspas, manter
             }
             
-            // Se começar e terminar com aspas simples ou duplas, manter como está
-            if (preg_match('/^(["\']).*\1$/', $value)) {
+            // Lista de palavras reservadas do JavaScript que NÃO devem ter aspas
+            $jsReservedWords = ['true', 'false', 'null', 'undefined', 'NaN', 'Infinity', 'this'];
+            if (in_array(strtolower($value), $jsReservedWords)) {
                 return $value;
             }
             
-            // Se for template string (com crases), manter como está
-            if (preg_match('/^`.*`$/', $value)) {
+            // Verificar se é uma expressão matemática simples (ex: 5 + 3)
+            if (preg_match('/^\s*\d+\s*[+\-*\/%]\s*\d+\s*$/', $value)) {
                 return $value;
             }
             
-            // Caso contrário, escapar e colocar entre aspas duplas
+            // Verificar se é acesso a propriedade (ex: pessoa.nome)
+            if (preg_match('/^[a-zA-Z_$][a-zA-Z0-9_$]*(\.[a-zA-Z_$][a-zA-Z0-9_$]*)+$/', $value)) {
+                // Verificar se tem pelo menos um ponto e não tem espaços
+                if (strpos($value, '.') !== false && strpos($value, ' ') === false) {
+                    return $value; // É acesso a propriedade
+                }
+            }
+            
+            // Verificar se é acesso a array (ex: frutas[0])
+            if (preg_match('/^[a-zA-Z_$][a-zA-Z0-9_$]*\[.*\]$/', $value)) {
+                return $value; // É acesso a array
+            }
+            
+            // Verificar se é chamada de função (ex: minhaFuncao())
+            if (preg_match('/^[a-zA-Z_$][a-zA-Z0-9_$]*\(.*\)$/', $value)) {
+                return $value; // É chamada de função
+            }
+            
+            // POR PADRÃO, qualquer string deve ser tratada como literal
+            // Apenas exceções muito específicas não recebem aspas
             return json_encode($value, JSON_UNESCAPED_UNICODE);
         }
         
         if (is_array($value)) {
             // Verificar se é array associativo (objeto) ou indexado (array)
-            if (array_keys($value) !== range(0, count($value) - 1)) {
+            $isAssoc = array_keys($value) !== range(0, count($value) - 1);
+            
+            if ($isAssoc) {
                 // É um objeto associativo
                 $parts = [];
                 foreach ($value as $k => $v) {
-                    $parts[] = json_encode((string)$k) . ': ' . $this->toJsLiteral($v);
+                    $parts[] = json_encode((string)$k, JSON_UNESCAPED_UNICODE) . ': ' . $this->toJsLiteral($v);
                 }
                 return '{' . implode(', ', $parts) . '}';
             } else {
@@ -73,15 +104,11 @@ class JsBuilder
         }
         
         if (is_object($value)) {
-            // Se for um objeto, converter para array e depois para objeto JS
             return $this->toJsLiteral((array)$value);
         }
         
-        // Fallback para json_encode
         return json_encode($value, JSON_UNESCAPED_UNICODE);
     }
-    
-    
     // Verifica se uma string é uma expressão JS (não deve ser colocada entre aspas)
     private function isJsExpression(string $value): bool
     {
@@ -350,11 +377,16 @@ class JsBuilder
     }
     
     // console.log com múltiplos argumentos
+    /**
+     * Emite console.log com múltiplos argumentos
+     * Uso: $js->consoleLog('"Mensagem:"', 'variavel', '"Outro texto:"', 'outraVar');
+     */
     public function consoleLog(...$args): void
     {
         $argsStr = implode(', ', array_map([$this, 'toJsLiteral'], $args));
         $this->emit("console.log($argsStr);");
     }
+    
     
     // console.error
     public function consoleError(...$args): void
@@ -615,8 +647,10 @@ class JsBuilder
     public function addEventListener(string $elemento, string $evento, string $funcao, bool $useCapture = false): void
     {
         $capture = $useCapture ? 'true' : 'false';
+        // NÃO adicione vírgula extra na função
         $this->emit("$elemento.addEventListener('$evento', $funcao, $capture);");
     }
+    
     
     // removeEventListener
     public function removeEventListener(string $elemento, string $evento, string $funcao, bool $useCapture = false): void
@@ -1895,4 +1929,71 @@ class JsBuilder
         $codigo = implode(PHP_EOL, $this->lines);
         return "<script>\n$codigo\n</script>";
     }
+
+    /**
+     * Chama um método de um objeto
+     * 
+     * @param string $objeto Nome da variável que contém o objeto
+     * @param string $metodo Nome do método a ser chamado
+     * @param array $args Argumentos para o método
+     * @param string|null $retorno Variável opcional para armazenar o retorno
+     */
+    public function callMethod(string $objeto, string $metodo, array $args = [], ?string $retorno = null): void
+    {
+        $argsStr = implode(', ', array_map([$this, 'toJsLiteral'], $args));
+        
+        if ($retorno) {
+            $this->emit("var $retorno = $objeto.$metodo($argsStr);");
+        } else {
+            $this->emit("$objeto.$metodo($argsStr);");
+        }
+    }
+    /**
+     * Acessar propriedade de um objeto
+     * 
+     * @param string $objeto Nome da variável que contém o objeto
+     * @param string $propriedade Nome da propriedade
+     * @param string|null $destino Variável opcional para armazenar o valor
+     */
+    public function getProperty(string $objeto, string $propriedade, ?string $destino = null): void
+    {
+        if ($destino) {
+            $this->emit("var $destino = $objeto.$propriedade;");
+        } else {
+            $this->emit("$objeto.$propriedade;");
+        }
+    }
+
+    /**
+     * Definir propriedade de um objeto
+     * 
+     * @param string $objeto Nome da variável que contém o objeto
+     * @param string $propriedade Nome da propriedade
+     * @param mixed $valor Valor a ser atribuído
+     */
+    public function setProperty(string $objeto, string $propriedade, mixed $valor): void
+    {
+        $valorStr = $this->toJsLiteral($valor);
+        $this->emit("$objeto.$propriedade = $valorStr;");
+    }
+
+    /**
+     * Chamar função global
+     * 
+     * @param string $funcao Nome da função
+     * @param array $args Argumentos
+     * @param string|null $retorno Variável opcional para armazenar o retorno
+     */
+    public function callFunction(string $funcao, array $args = [], ?string $retorno = null): void
+    {
+        $argsStr = implode(', ', array_map([$this, 'toJsLiteral'], $args));
+        
+        if ($retorno) {
+            $this->emit("var $retorno = $funcao($argsStr);");
+        } else {
+            $this->emit("$funcao($argsStr);");
+        }
+    }
+
+
 }
